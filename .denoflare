@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/skymethod/denoflare/v0.5.11/common/config.schema.json",
+  "scripts": {
+    "main": {
+      "path": "./cfworker.ts",
+      "localPort": 8000
+    }
+  },
+  "profiles": {
+    "myprofile": {
+      "accountId": "你的cf worker accountId",
+      "apiToken": "你的api token"
+    }
+  }
+}
