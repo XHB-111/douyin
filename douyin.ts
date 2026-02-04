@@ -22,6 +22,15 @@ async function fetchText(
   return { finalUrl: resp.url, text: await resp.text(), headers: resp.headers };
 }
 
+function getSetCookieHeader(headers: Headers): string | null {
+  const anyHeaders = headers as any;
+  if (typeof anyHeaders.getSetCookie === "function") {
+    const values = anyHeaders.getSetCookie();
+    if (Array.isArray(values) && values.length > 0) return values.join(", ");
+  }
+  return headers.get("set-cookie");
+}
+
 function extractCookieFromSetCookieHeader(
   setCookie: string | null,
   name: string,
@@ -44,9 +53,13 @@ function computeAcSignature(
   pageUrl: string,
 ): string {
   const windowObj: any = Object.create(globalThis);
+  windowObj.window = windowObj;
+  windowObj.self = windowObj;
+  windowObj.top = windowObj;
+  windowObj.parent = windowObj;
   windowObj.navigator = { userAgent };
   windowObj.location = { href: pageUrl, protocol: "https:" };
-  windowObj.document = { cookie: `__ac_nonce=${nonce}` };
+  windowObj.document = { cookie: `__ac_nonce=${nonce}`, referrer: "" };
 
   const bytedAcrawler = new Function(
     "window",
@@ -74,14 +87,19 @@ function computeAcSignature(
 
 async function fetchDouyinHtmlBypassAcr(url: string): Promise<string> {
   const first = await fetchText(url, DESKTOP_USER_AGENT, { Accept: "text/html" });
+  const setCookie = getSetCookieHeader(first.headers);
   const nonce = extractCookieFromSetCookieHeader(
-    first.headers.get("set-cookie"),
+    setCookie,
     "__ac_nonce",
   );
-  const isAcrChallenge =
-    first.text.includes("window.byted_acrawler") && typeof nonce === "string";
 
+  const isAcrChallenge = first.text.includes("window.byted_acrawler");
   if (!isAcrChallenge) return first.text;
+  if (typeof nonce !== "string") {
+    throw new Error(
+      "Douyin ACR challenge detected, but __ac_nonce cookie is unavailable (Set-Cookie header not exposed by runtime)",
+    );
+  }
 
   const script = extractAcrChallengeScript(first.text);
   if (!script) throw new Error("Douyin ACR challenge script not found");
