@@ -1,7 +1,7 @@
 const MOBILE_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile Safari/537.36";
-const DESKTOP_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const IOS_SHARE_USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 const videoIdPattern = /"video":{"play_addr":{"uri":"([a-z0-9]+)"/;
 const playUrlTemplate =
@@ -22,141 +22,114 @@ async function fetchText(
   return { finalUrl: resp.url, text: await resp.text(), headers: resp.headers };
 }
 
-function getSetCookieHeader(headers: Headers): string | null {
-  const anyHeaders = headers as any;
-  if (typeof anyHeaders.getSetCookie === "function") {
-    const values = anyHeaders.getSetCookie();
-    if (Array.isArray(values) && values.length > 0) return values.join(", ");
-  }
-  return headers.get("set-cookie");
-}
-
-function extractCookieFromSetCookieHeader(
-  setCookie: string | null,
-  name: string,
-): string | null {
-  if (!setCookie) return null;
-  const match = new RegExp(`${name}=([^;]+)`).exec(setCookie);
-  return match?.[1] ?? null;
-}
-
-function extractAcrChallengeScript(html: string): string | null {
-  const match =
-    /<script>([\s\S]*?)<\/script>\s*<script>function _f1/.exec(html);
-  return match?.[1] ?? null;
-}
-
-function computeAcSignature(
-  challengeScript: string,
-  nonce: string,
-  userAgent: string,
-  pageUrl: string,
-): string {
-  const windowObj: any = Object.create(globalThis);
-  windowObj.window = windowObj;
-  windowObj.self = windowObj;
-  windowObj.top = windowObj;
-  windowObj.parent = windowObj;
-  windowObj.navigator = { userAgent };
-  windowObj.location = { href: pageUrl, protocol: "https:" };
-  windowObj.document = { cookie: `__ac_nonce=${nonce}`, referrer: "" };
-
-  const bytedAcrawler = new Function(
-    "window",
-    "global",
-    "navigator",
-    "location",
-    "document",
-    `${challengeScript}; return window.byted_acrawler;`,
-  )(windowObj, windowObj, windowObj.navigator, windowObj.location, windowObj.document);
-
-  if (!bytedAcrawler || typeof bytedAcrawler.sign !== "function") {
-    throw new Error("byted_acrawler not available");
-  }
-
-  if (typeof bytedAcrawler.init === "function") {
-    bytedAcrawler.init({ aid: 99999999, dfp: 0 });
-  }
-
-  const signature = bytedAcrawler.sign("", nonce);
-  if (typeof signature !== "string" || signature.length === 0) {
-    throw new Error("Failed to compute __ac_signature");
-  }
-  return signature;
-}
-
-async function fetchDouyinHtmlBypassAcr(url: string): Promise<string> {
-  const first = await fetchText(url, DESKTOP_USER_AGENT, { Accept: "text/html" });
-  const setCookie = getSetCookieHeader(first.headers);
-  const nonce = extractCookieFromSetCookieHeader(
-    setCookie,
-    "__ac_nonce",
-  );
-
-  const isAcrChallenge = first.text.includes("window.byted_acrawler");
-  if (!isAcrChallenge) return first.text;
-  if (typeof nonce !== "string") {
-    throw new Error(
-      "Douyin ACR challenge detected, but __ac_nonce cookie is unavailable (Set-Cookie header not exposed by runtime)",
-    );
-  }
-
-  const script = extractAcrChallengeScript(first.text);
-  if (!script) throw new Error("Douyin ACR challenge script not found");
-
-  const signature = computeAcSignature(
-    script,
-    nonce,
-    DESKTOP_USER_AGENT,
-    first.finalUrl,
-  );
-
-  const cookie =
-    `__ac_nonce=${nonce}; __ac_signature=${signature}; __ac_referer=__ac_blank`;
-  const second = await fetchText(first.finalUrl, DESKTOP_USER_AGENT, {
-    Accept: "text/html",
-    Cookie: cookie,
-    Referer: "https://www.douyin.com/",
-  });
-
-  return second.text;
-}
-
 function decodeUrlEscapes(url: string): string {
-  return url.replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+  return url
+    .replace(/\\u002F/g, "/")
+    .replace(/\\u0026/g, "&")
+    .replace(/&amp;/g, "&");
+}
+
+function extractAwemeIdFromText(
+  input: string,
+): { id: string; hint: "video" | "note" } | null {
+  const patterns = [
+    { re: /\/video\/(\d+)/, hint: "video" as const },
+    { re: /\/note\/(\d+)/, hint: "note" as const },
+    { re: /\/slides\/(\d+)/, hint: "note" as const },
+    { re: /\/share\/note\/(\d+)/, hint: "note" as const },
+    { re: /item_ids=(\d+)/, hint: "note" as const },
+    { re: /aweme_ids=(\d+)/, hint: "note" as const },
+  ] as const;
+
+  for (const { re, hint } of patterns) {
+    const match = re.exec(input);
+    if (match?.[1]) return { id: match[1], hint };
+  }
+  return null;
+}
+
+async function resolveAwemeId(
+  url: string,
+): Promise<{ id: string; hint: "video" | "note" }> {
+  const direct = extractAwemeIdFromText(url);
+  if (direct) return direct;
+
+  const resp = await fetchText(url, MOBILE_USER_AGENT, { Accept: "text/html" });
+  const fromFinalUrl = extractAwemeIdFromText(resp.finalUrl);
+  if (fromFinalUrl) return fromFinalUrl;
+  const fromBody = extractAwemeIdFromText(resp.text);
+  if (fromBody) return fromBody;
+
+  throw new Error("Aweme ID not found in URL");
+}
+
+function scoreImageUrl(url: string): number {
+  let score = 0;
+
+  if (url.startsWith("https://p3")) score += 10;
+
+  if (/\.(jpe?g)\b/i.test(url)) score += 6;
+  else if (/\.png\b/i.test(url)) score += 5;
+  else if (/\.webp\b/i.test(url)) score += 4;
+
+  const tildeIndex = url.indexOf("~");
+  const queryIndex = url.indexOf("?");
+  const template = tildeIndex === -1
+    ? ""
+    : url.slice(tildeIndex + 1, queryIndex === -1 ? undefined : queryIndex);
+
+  if (template.includes("watermark") || url.includes("watermark")) score -= 10000;
+
+  if (template.includes("tplv-dy-aweme-images")) score += 80;
+  if (template.includes("tplv-dy-lqen-new")) score += 70;
+  if (template.includes("resize")) score += 20;
+
+  const qMatch = /:q(\d{2,3})\b/i.exec(template);
+  if (qMatch?.[1]) score += Number(qMatch[1]);
+
+  for (const match of template.matchAll(/:(\d{2,5})\b/g)) {
+    score += Math.min(Number(match[1]), 2500) / 100;
+  }
+
+  try {
+    const u = new URL(url);
+    if (u.searchParams.get("sc") === "image") score += 1000;
+    if (u.searchParams.get("biz_tag") === "aweme_images") score += 100;
+  } catch {
+    // ignore
+  }
+
+  return score;
 }
 
 function extractNoWatermarkImageUrlsFromHtml(html: string): string[] {
-  const patterns = [
-    // URLs embedded in JSON strings, terminated by \"
-    /https:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/(tos-cn-i-[^/]+\/[^~"\s]+)~tplv-dy-aweme-images:q75\.(jpeg|webp)\?[^"<]*?(?=\\")/g,
-    // Fallback: URLs in HTML attrs, terminated by "
-    /https:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/(tos-cn-i-[^/]+\/[^~"\s]+)~tplv-dy-aweme-images:q75\.(jpeg|webp)\?[^"\s]*/g,
-  ] as const;
+  const normalized = decodeUrlEscapes(html);
+  const urlRe =
+    /https?:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/[^"\s]+/g;
 
   const order: string[] = [];
-  const bestByUri = new Map<string, { url: string; score: number }>();
+  const bestByKey = new Map<string, { url: string; score: number }>();
 
-  for (const re of patterns) {
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(html))) {
-      const uri = match[1];
-      const ext = match[2];
-      const rawUrl = match[0];
-      const url = decodeUrlEscapes(rawUrl);
+  let match: RegExpExecArray | null;
+  while ((match = urlRe.exec(normalized))) {
+    const url = match[0];
+    if (!url.includes("/tos-cn-i-")) continue;
+    if (url.includes("watermark")) continue;
 
-      let score = 0;
-      score += ext === "jpeg" ? 10 : 5;
-      if (url.startsWith("https://p3")) score += 2;
+    const keyMatch =
+      /https?:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/(tos-cn-i-[^/?#]+\/[^~/?#]+)/
+        .exec(url);
+    if (!keyMatch?.[1]) continue;
 
-      if (!bestByUri.has(uri)) order.push(uri);
-      const prev = bestByUri.get(uri);
-      if (!prev || score > prev.score) bestByUri.set(uri, { url, score });
-    }
+    const key = keyMatch[1];
+    const score = scoreImageUrl(url);
+
+    if (!bestByKey.has(key)) order.push(key);
+    const prev = bestByKey.get(key);
+    if (!prev || score > prev.score) bestByKey.set(key, { url, score });
   }
 
-  const urls = order.map((uri) => bestByUri.get(uri)!.url);
-  return Array.from(new Set(urls));
+  return order.map((key) => bestByKey.get(key)!.url);
 }
 
 async function getVideoId(url: string): Promise<string> {
@@ -172,8 +145,12 @@ async function getVideoUrl(url: string): Promise<string> {
 }
 
 async function getImageUrls(url: string): Promise<string[]> {
-  const html = await fetchDouyinHtmlBypassAcr(url);
-  const urls = extractNoWatermarkImageUrlsFromHtml(html);
+  const { id } = await resolveAwemeId(url);
+  const shareUrl = `https://m.douyin.com/share/note/${id}`;
+  const resp = await fetchText(shareUrl, IOS_SHARE_USER_AGENT, {
+    Accept: "text/html",
+  });
+  const urls = extractNoWatermarkImageUrlsFromHtml(resp.text);
   if (urls.length === 0) throw new Error("No images found in URL");
   return urls;
 }
