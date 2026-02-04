@@ -26,6 +26,7 @@ function decodeUrlEscapes(url: string): string {
   return url
     .replace(/\\u002F/g, "/")
     .replace(/\\u0026/g, "&")
+    .replace(/\\\//g, "/")
     .replace(/&amp;/g, "&");
 }
 
@@ -105,19 +106,20 @@ function scoreImageUrl(url: string): number {
 function extractNoWatermarkImageUrlsFromHtml(html: string): string[] {
   const normalized = decodeUrlEscapes(html);
   const urlRe =
-    /https?:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/[^"\s]+/g;
+    /(?:https?:)?\/\/p\d+(?:-pc)?(?:-sign)?\.(?:douyinpic|byteimg)\.com\/[^"\s]+/g;
 
   const order: string[] = [];
   const bestByKey = new Map<string, { url: string; score: number }>();
 
   let match: RegExpExecArray | null;
   while ((match = urlRe.exec(normalized))) {
-    const url = match[0];
+    const rawUrl = match[0];
+    const url = rawUrl.startsWith("//") ? `https:${rawUrl}` : rawUrl;
     if (!url.includes("/tos-cn-i-")) continue;
     if (url.includes("watermark")) continue;
 
     const keyMatch =
-      /https?:\/\/p\d+(?:-pc)?-sign\.douyinpic\.com\/(tos-cn-i-[^/?#]+\/[^~/?#]+)/
+      /https?:\/\/p\d+(?:-pc)?(?:-sign)?\.(?:douyinpic|byteimg)\.com\/(tos-cn-i-[^/?#]+\/[^~/?#]+)/
         .exec(url);
     if (!keyMatch?.[1]) continue;
 
@@ -149,6 +151,8 @@ async function getImageUrls(url: string): Promise<string[]> {
   const shareUrl = `https://m.douyin.com/share/note/${id}`;
   const resp = await fetchText(shareUrl, IOS_SHARE_USER_AGENT, {
     Accept: "text/html",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    Referer: "https://www.douyin.com/",
   });
   const urls = extractNoWatermarkImageUrlsFromHtml(resp.text);
   if (urls.length === 0) throw new Error("No images found in URL");
