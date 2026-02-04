@@ -1,8 +1,10 @@
-# 抖音无水印视频下载服务
+# 抖音无水印下载服务（视频/图集）
 
 ## 📌 功能说明
 
-通过提供的抖音视频链接，获取对应的无水印视频链接。
+通过提供抖音分享链接，解析并返回对应的无水印资源直链：
+- 视频：返回无水印视频直链（URL）
+- 图集：返回多张无水印图片直链（每行一个 URL）
 
 ### 🔧 请求方式
 - **方法**：GET
@@ -11,7 +13,7 @@
     - `url`: 抖音视频分享链接
 
 ### 📤 返回结果
-返回解析后的无水印视频直链（URL）。
+视频时返回 1 条 URL；图集时返回多行 URL（每行一个）。
 
 ---
 
@@ -42,4 +44,3 @@
 ## 📈 Stars 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=pwh-pwh/douyinVd&type=Date)](https://star-history.com/#pwh-pwh/douyinVd&Date)
-
